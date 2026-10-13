@@ -23,7 +23,7 @@ jobs:
               ['IKK felnőttképzés', 'https://ikk.hu/gyujto/felnottek-kepzese']
             ];
             const {owner, repo} = context.repo;
-            const {data:issues} = await github.paginate(github.rest.issues.listForRepo,{owner,repo,state:'all',per_page:100});
+            const issues = await github.paginate(github.rest.issues.listForRepo,{owner,repo,state:'all',per_page:100});
             for(const [name,url] of targets) {
               const marker='<!-- uniradar-source:'+url+' -->';
               const existing=issues.find(i=>!i.pull_request && i.body?.includes(marker));
