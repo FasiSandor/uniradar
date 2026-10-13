@@ -64,24 +64,28 @@ const rewrites=actions.filter(x=>x.action==='update');
 if(rewrites.length&&!args.includes('--approve-updates'))throw Error('Existing official entries would change. Review preview and add --approve-updates.');
 const nowIso=new Date().toISOString().slice(0,10);
 if(data.reviewedAt>nowIso)throw Error('Review date cannot be in the future');
+// Build both the offering update and its audit record as one atomic HTTP transaction.
+// Any failed statement rolls back the whole import. No partial batch publication.
+const operations=[];
 let updated=0;
 for(const o of normalized){
   const change=actions.find(a=>a.id===o.id);
   if(change.action==='unchanged')continue;
-  // Stale source material must never replace a more recently verified record.
   if(change.previous && o.sourceDate<change.previous.sourceDate)throw Error('Older source cannot overwrite '+o.id);
-  await sql`INSERT INTO public.uniradar_offerings
+  operations.push(sql`INSERT INTO public.uniradar_offerings
     (id,course_id,admission_year,institution,title,city,mode,category,status,source_url,source_date,application_deadline,updated_at)
     VALUES (${o.id},${o.courseId},${o.year},${o.institution},${o.title},${o.city},${o.mode},${o.category},${o.status},${o.sourceUrl},${o.sourceDate}::date,${o.applicationDeadline}::date,now())
     ON CONFLICT (id) DO UPDATE SET
-    course_id=excluded.course_id, admission_year=excluded.admission_year,
+    course_id=excluded.course_id,admission_year=excluded.admission_year,
     institution=excluded.institution,title=excluded.title,city=excluded.city,
     mode=excluded.mode,category=excluded.category,status=excluded.status,
     source_url=excluded.source_url,source_date=excluded.source_date,
-    application_deadline=excluded.application_deadline,updated_at=now()`;
-  // Audit preserves the previous record and reviewed source for later examination.
-  await sql`INSERT INTO public.uniradar_import_audit (offering_id,reviewed_by,reviewed_at,before_data,after_data,source_url)
-    VALUES (${o.id},${data.reviewedBy},${data.reviewedAt}::date,${JSON.stringify(change.previous??null)}::jsonb,${JSON.stringify(o)}::jsonb,${o.sourceUrl})`;
+    application_deadline=excluded.application_deadline,updated_at=now()
+    WHERE public.uniradar_offerings.source_date<=excluded.source_date`);
+  operations.push(sql`INSERT INTO public.uniradar_import_audit
+    (offering_id,reviewed_by,reviewed_at,before_data,after_data,source_url)
+    VALUES (${o.id},${data.reviewedBy},${data.reviewedAt}::date,${JSON.stringify(change.previous??null)}::jsonb,${JSON.stringify(o)}::jsonb,${o.sourceUrl})`);
   updated++;
 }
-console.log('Reviewed Neon records written: '+updated);
+if(operations.length)await sql.transaction(operations);
+console.log('Reviewed Neon records written atomically: '+updated);
