@@ -20,6 +20,7 @@ import {resolve} from 'node:path';
 const args=process.argv.slice(2);
 const filepath=args.find(a=>!a.startsWith('--'));
 const apply=args.includes('--apply');
+if(args.includes('--approve-updates')&&!apply)throw Error('--approve-updates requires --apply');
 if(!filepath){console.error('Usage: node scripts/import-offerings.mjs reviewed-offerings.json [--apply]');process.exit(2);}
 const data=JSON.parse(readFileSync(resolve(filepath),'utf8'));
 const allowedCategories=new Set(['Egyetemi','Doktori','Felnőttképzés']);
@@ -49,8 +50,26 @@ if(!apply){console.log('No database writes. Use --apply only after reviewing off
 if(!process.env.DATABASE_URL)throw Error('DATABASE_URL is required for --apply; never put the credential in Git.');
 const {neon}=await import('@neondatabase/serverless');
 const sql=neon(process.env.DATABASE_URL);
+// Preview changes against the live database before writing.
+const existing=await sql`SELECT id,course_id AS "courseId",admission_year AS year,institution,title,city,mode,category,status,source_url AS "sourceUrl",to_char(source_date,'YYYY-MM-DD') AS "sourceDate",CASE WHEN application_deadline IS NULL THEN NULL ELSE to_char(application_deadline,'YYYY-MM-DD') END AS "applicationDeadline" FROM public.uniradar_offerings`;
+const existingById=new Map(existing.map(x=>[x.id,x]));
+const fields=['courseId','year','institution','title','city','mode','category','status','sourceUrl','sourceDate','applicationDeadline'];
+const actions=normalized.map(o=>{
+  const previous=existingById.get(o.id);
+  const changed=previous?fields.filter(k=>String(previous[k]??'')!==String(o[k]??'')):[];
+  return {id:o.id,action:!previous?'create':changed.length?'update':'unchanged',changed,previous};
+});
+console.log('Import preview:',JSON.stringify(actions.map(({id,action,changed})=>({id,action,changed})),null,2));
+const rewrites=actions.filter(x=>x.action==='update');
+if(rewrites.length&&!args.includes('--approve-updates'))throw Error('Existing official entries would change. Review preview and add --approve-updates.');
+const nowIso=new Date().toISOString().slice(0,10);
+if(data.reviewedAt>nowIso)throw Error('Review date cannot be in the future');
 let updated=0;
 for(const o of normalized){
+  const change=actions.find(a=>a.id===o.id);
+  if(change.action==='unchanged')continue;
+  // Stale source material must never replace a more recently verified record.
+  if(change.previous && o.sourceDate<change.previous.sourceDate)throw Error('Older source cannot overwrite '+o.id);
   await sql`INSERT INTO public.uniradar_offerings
     (id,course_id,admission_year,institution,title,city,mode,category,status,source_url,source_date,application_deadline,updated_at)
     VALUES (${o.id},${o.courseId},${o.year},${o.institution},${o.title},${o.city},${o.mode},${o.category},${o.status},${o.sourceUrl},${o.sourceDate}::date,${o.applicationDeadline}::date,now())
@@ -60,6 +79,9 @@ for(const o of normalized){
     mode=excluded.mode,category=excluded.category,status=excluded.status,
     source_url=excluded.source_url,source_date=excluded.source_date,
     application_deadline=excluded.application_deadline,updated_at=now()`;
+  // Audit preserves the previous record and reviewed source for later examination.
+  await sql`INSERT INTO public.uniradar_import_audit (offering_id,reviewed_by,reviewed_at,before_data,after_data,source_url)
+    VALUES (${o.id},${data.reviewedBy},${data.reviewedAt}::date,${JSON.stringify(change.previous??null)}::jsonb,${JSON.stringify(o)}::jsonb,${o.sourceUrl})`;
   updated++;
 }
 console.log('Reviewed Neon records written: '+updated);
