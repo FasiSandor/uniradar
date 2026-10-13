@@ -3,7 +3,7 @@ import {useEffect,useMemo,useState} from "react";
 import {Search,Heart,ExternalLink,Info,SlidersHorizontal} from "lucide-react";
 import {courses,type Course} from "./data";
 type Offering={id:string;courseId:string;year:number;institution:string;title:string;city:string;mode:string;sourceUrl:string;sourceDate:string;applicationDeadline?:string;status:"announced"|"closed"|"cancelled"};
-type Feed={schemaVersion:number;lastReviewed:string|null;source?:string;offerings:Offering[]};
+type Feed={schemaVersion:number;lastReviewed:string|null;source?:string;offerings:Offering[];courses?:Partial<Course>[]};
 const FIRST_YEAR=2026;
 const CURRENT_YEAR=2027;
 const normalize=(s:string)=>s.toLocaleLowerCase("hu").normalize("NFD").replace(/[\u0300-\u036f]/g,"").replace(/[^a-z0-9]+/g," ").trim();
@@ -13,7 +13,8 @@ const [search,setSearch]=useState(initial),[query,setQuery]=useState(initial),[c
 const [year,setYear]=useState(CURRENT_YEAR),[onlyAnnounced,setOnlyAnnounced]=useState(false),[feed,setFeed]=useState<Feed|null>(null),[feedState,setFeedState]=useState<"loading"|"ready"|"error">("loading");
 useEffect(()=>{let active=true;const refresh=async()=>{try{const res=await fetch("/api/catalog?ts="+Math.floor(Date.now()/1800000),{cache:"no-store"});if(!res.ok)throw new Error("feed");const d=await res.json() as Feed;if(d.schemaVersion!==1||!Array.isArray(d.offerings))throw new Error("schema");if(active){setFeed(d);setFeedState("ready")}}catch{if(active)setFeedState("error")}};refresh();const timer=setInterval(refresh,1800000);return()=>{active=false;clearInterval(timer)}},[]);
 const categoryConstraint=section==="Doktori iskolák"?"Doktori":section==="Felnőttképzések"?"Felnőttképzés":null;
-const source=courses.filter(c=>(!categoryConstraint||c.category===categoryConstraint)&&(section!=="Kedvencek"||favorites.includes(c.id)));
+const catalog:Course[]=feed?.source==="neon"&&Array.isArray(feed.courses)?feed.courses.filter((c):c is Course=>typeof c.id==="string"&&typeof c.title==="string"&&typeof c.category==="string"&&typeof c.institution==="string"&&typeof c.city==="string").map(c=>({...c,mode:c.mode||"Intézményi tájékoztató szerint",tags:Array.isArray(c.tags)?c.tags:[],description:c.description||"",url:c.url||"https://www.felvi.hu/",level:c.level||"Ellenőrizendő"}) as Course):courses;
+const source=catalog.filter(c=>(!categoryConstraint||c.category===categoryConstraint)&&(section!=="Kedvencek"||favorites.includes(c.id)));
 const cities=[...new Set(source.map(c=>c.city))].sort((a,b)=>a.localeCompare(b,"hu"));
 const levels=[...new Set(source.map(c=>c.level))].sort((a,b)=>a.localeCompare(b,"hu"));
 const announcements=(feed?.offerings??[]).filter(o=>o.year===year&&o.status==="announced"&&/^https:\/\//.test(o.sourceUrl));
