@@ -1,0 +1,38 @@
+name: UniRadar official-source watch
+on:
+  schedule:
+    - cron: '16 6 * * 1'
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  check-official-sources:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Detect official source changes without publishing unverified courses
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const crypto = require('crypto');
+            const targets = [
+              ['Felvi', 'https://www.felvi.hu/'],
+              ['ODT témakiírások', 'https://www.doktori.hu/doktori-kepzes/temakiirasok/'],
+              ['IKK', 'https://ikk.hu/gyujto/felnottek-kepzese']
+            ];
+            const {owner, repo} = context.repo;
+            const {data:issues} = await github.rest.issues.listForRepo({owner,repo,state:'open',per_page:100});
+            for(const [name,url] of targets) {
+              try {
+                const res=await fetch(url,{headers:{'User-Agent':'UniRadar-Source-Watch/1.0'}});
+                if(!res.ok) {core.warning(name+': HTTP '+res.status);continue}
+                const html=await res.text();
+                const digest=crypto.createHash('sha256').update(html.replace(/\s+/g,' ')).digest('hex');
+                const marker='<!-- uniradar-source:'+name+' -->';
+                const prev=issues.find(x=>x.body?.includes(marker));
+                if(prev && prev.body?.includes('digest:'+digest)) continue;
+                const body=marker+'\nForrás: '+url+'\nÚj ellenőrzött oldal-pillanatkép: digest:'+digest+'\nEllenőrzés: '+new Date().toISOString()+'\n\n**Feladat:** emberi ellenőrzés után csak hivatalos meghirdetés alapján frissítsd a public/catalog/offerings.json fájlt. A figyelő nem publikál automatikusan igazolatlan képzéseket.';
+                if(prev) await github.rest.issues.update({owner,repo,issue_number:prev.number,title:'Forrásváltozás ellenőrzése: '+name,body});
+                else await github.rest.issues.create({owner,repo,title:'Forrásváltozás ellenőrzése: '+name,body});
+              }catch(e){core.warning(name+': '+String(e))}
+            }
